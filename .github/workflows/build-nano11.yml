@@ -1,0 +1,59 @@
+name: Build Nano11 ISO
+
+on:
+  workflow_dispatch:  # you manually trigger it
+  # optionally schedule
+  # schedule:
+  #   - cron: '0 2 * * *'   # every day at 2am UTC
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+
+    - name: Download ISO
+      # Using Powershell's Invoke-WebRequest
+      shell: pwsh
+      run: |
+        $isoUrl = 'https://software.download.prss.microsoft.com/dbazure/Win11_24H2_English_x64.iso?t=7beb5d6c-6cad-4234-9e87-804980ebc436&P1=1757908258&P2=601&P3=2&P4=HT3zAv8XdgVbY8svsu9ZbBRzkpJdRD%2bxgTbnUbee08giQjUIbnGeEmRS7cpZlgMQgE%2fVslixdv7a40nBdWOADuriQjUIbnGeEmRS7cpZlgMQgE%2fVslixdv7a40nBdWOADuriQjUIbnGeEmRS7cpZlgMQgE%2fVslixdv7a40nBdWOADuriQjUIbnGeEmRS7cpZlgMQgE%2fVslixdv7a40nBdWOADuriQjUIbnGeEmRS7cpZlgMQgE%2fVslixdv7a40nBdWOADuriQjUIbnGeEmRS7cpZlgMQgE%2fVslixdv7a40nBdWOADuriQjUIbnGeEmRS7cpZlgMQgE%2fVslixdv7a40nBdWOADuriQjUIbnGeEmRS7cpZlgMQgE%2fVslixdv7a40nBdWOADuriQjUIbnGeEmRS7cpZlgMQgE%2fVslixdv7a40nBdWOADuriQjUIbnGeEmRS7cpZlgMQgE%2fVslixdv7a40nBdWOADuriQjUIbnGeEmRS7cpZlgMQgE%2fVslixdv7a40nBdW...' # your full link
+        $isoPath = 'C:\actions\work\windows11.iso'
+        Invoke-WebRequest -Uri $isoUrl -OutFile $isoPath
+
+    - name: Download nano11 script
+      shell: pwsh
+      run: |
+        # Clone only what you need (or full repo)
+        git clone https://github.com/ntdevlabs/nano11.git
+        # Or you could use GitHub action "actions/checkout" with submodules or external repo
+        cd nano11
+
+    - name: Run nano11 script
+      shell: pwsh
+      run: |
+        # Ensure execution policy allows script
+        Set-ExecutionPolicy Bypass -Scope Process -Force
+        # Mount the ISO
+        $mount = Mount-DiskImage -ImagePath 'C:\actions\work\windows11.iso' -PassThru
+        Start-Sleep -Seconds 5
+        # Find drive letter
+        $driveLetter = ($mount | Get-Volume).DriveLetter + ":"
+        # Run nano11 script, assuming it's named nano11.ps1
+        .\nano11\nano11builder.ps1 -SourceIsoDrive $driveLetter
+        # (You may need to adjust parameters etc per nano11’s script)
+
+    - name: Output resulting ISO
+      shell: pwsh
+      run: |
+        # The script likely outputs a new ISO in working folder
+        # Upload it as artifact so you can download
+        $outIso = Get-ChildItem -Path .\nano11\*.iso | Select-Object -First 1
+        Write-Host "Output ISO: $($outIso.FullName)"
+      # Use upload-artifact
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: nano11-built-iso
+        path: nano11\*.iso
