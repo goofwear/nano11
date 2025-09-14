@@ -72,6 +72,10 @@ jobs:
             $driveLetter = $volume.DriveLetter + ":"
             Write-Host "Mounted ISO to drive: $driveLetter"
             
+            # List contents of mounted drive
+            Write-Host "Contents of mounted drive:"
+            Get-ChildItem $driveLetter | Format-Table Name, Length, LastWriteTime
+            
             # Verify the drive has Windows installation files
             $setupExe = Join-Path $driveLetter "setup.exe"
             if (-not (Test-Path $setupExe)) {
@@ -81,26 +85,82 @@ jobs:
             
             # Change to nano11 directory and run the script
             Set-Location ".\nano11"
-            Write-Host "Running nano11 builder script..."
+            Write-Host "Current directory: $(Get-Location)"
+            Write-Host "Contents of nano11 directory:"
+            Get-ChildItem -Name
             
-            # Check if the script exists
-            if (-not (Test-Path ".\nano11builder.ps1")) {
-                Write-Error "nano11builder.ps1 not found in the repository"
-                Get-ChildItem -Name
+            # Check if the script exists and find the correct one
+            $scriptPath = $null
+            $possibleScripts = @("nano11builder.ps1", "Nano11Builder.ps1", "nano11.ps1")
+            
+            foreach ($script in $possibleScripts) {
+                if (Test-Path $script) {
+                    $scriptPath = $script
+                    break
+                }
+            }
+            
+            if (-not $scriptPath) {
+                Write-Error "No nano11 builder script found. Available files:"
+                Get-ChildItem -Recurse -Name "*.ps1"
                 exit 1
             }
             
-            # Run the nano11 builder
-            .\nano11builder.ps1 -SourceIsoDrive $driveLetter
+            Write-Host "Found script: $scriptPath"
+            Write-Host "Running nano11 builder script with drive: $driveLetter"
+            
+            # Check script parameters first
+            $scriptContent = Get-Content $scriptPath -Raw
+            Write-Host "Script parameters (first few lines):"
+            (Get-Content $scriptPath | Select-Object -First 20) -join "`n"
+            
+            # Try different parameter names that might work
+            $parameterVariations = @(
+                @{Name="-SourceIsoDrive"; Value=$driveLetter},
+                @{Name="-srciso"; Value=$driveLetter},
+                @{Name="-source"; Value=$driveLetter},
+                @{Name="-iso"; Value=$driveLetter}
+            )
+            
+            $scriptRan = $false
+            foreach ($param in $parameterVariations) {
+                if ($scriptContent -match $param.Name) {
+                    Write-Host "Trying parameter: $($param.Name) $($param.Value)"
+                    try {
+                        & ".\$scriptPath" $param.Name $param.Value
+                        $scriptRan = $true
+                        break
+                    } catch {
+                        Write-Host "Failed with parameter $($param.Name): $_"
+                    }
+                }
+            }
+            
+            if (-not $scriptRan) {
+                Write-Host "Trying to run script without parameters (interactive mode may not work):"
+                & ".\$scriptPath"
+            }
+            
+            Write-Host "Script execution completed."
+            Write-Host "Contents after script execution:"
+            Get-ChildItem -Recurse -Name
             
         } catch {
             Write-Error "Error during nano11 build: $_"
+            Write-Host "Full error details:"
+            Write-Host $_.Exception.Message
+            Write-Host $_.ScriptStackTrace
             exit 1
         } finally {
             # Cleanup: Dismount the ISO
             if ($mount) {
                 Write-Host "Dismounting ISO..."
-                Dismount-DiskImage -ImagePath $isoPath -ErrorAction SilentlyContinue
+                try {
+                    Dismount-DiskImage -ImagePath $isoPath
+                    Write-Host "ISO dismounted successfully"
+                } catch {
+                    Write-Host "Warning: Could not dismount ISO: $_"
+                }
             }
         }
 
