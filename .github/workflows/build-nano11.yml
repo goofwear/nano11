@@ -6,6 +6,7 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 120
 
     steps:
     - name: Checkout this repo
@@ -15,32 +16,134 @@ jobs:
       shell: pwsh
       run: |
         $isoUrl = 'https://software.download.prss.microsoft.com/dbazure/Win11_24H2_English_x64.iso?t=7beb5d6c-6cad-4234-9e87-804980ebc436&P1=1757908258&P2=601&P3=2&P4=HT3zAv8XdgVbY8svsu9ZbBRzkpJdRD%2bxgTbnUbee08giQjUIbnGeEmRS7cpZlgMQgE%2fVslixdv7a40nBdWOADuri%2bHDZOvjNfVvAMZ9KIlkSUv6%2bdv8%2bJVBAl1AIJj5Xdsd7tXRBMWu9%2f6iAebmd15UzuHWGbOgBy7TUqJz3wd5T8bEk3XgiWVag8NVXy%2fJ97dYRY3L7ZAkQMSJw6bTmksQcWqZMglF9bnYRpANlR06CquKDwwxgA9%2fWdj%2bRFQBsa8c%2f8ByRtboof0eJrQSYI64WHGm82KauJ9QPFclEv15GWhoNcn6RuGe9T92bTnbC87QQ8k8MPufJT2hczY4yjA%3d%3d'
-        Invoke-WebRequest -Uri $isoUrl -OutFile 'C:\actions\work\windows11.iso'
+        $isoPath = Join-Path $env:GITHUB_WORKSPACE "windows11.iso"
+        Write-Host "Downloading Windows 11 ISO to: $isoPath"
+        
+        # Create directory if it doesn't exist
+        $parentDir = Split-Path $isoPath -Parent
+        if (-not (Test-Path $parentDir)) {
+            New-Item -ItemType Directory -Path $parentDir -Force
+        }
+        
+        # Download with progress and error handling
+        try {
+            Invoke-WebRequest -Uri $isoUrl -OutFile $isoPath -UseBasicParsing
+            Write-Host "ISO downloaded successfully. Size: $((Get-Item $isoPath).Length / 1MB) MB"
+        } catch {
+            Write-Error "Failed to download ISO: $_"
+            exit 1
+        }
 
     - name: Clone nano11
       shell: pwsh
       run: |
+        Write-Host "Cloning nano11 repository..."
         git clone https://github.com/ntdevlabs/nano11.git
+        Write-Host "Repository cloned successfully"
+        
+        # List contents to verify
+        Get-ChildItem -Path ".\nano11" -Recurse -Name
 
     - name: Run nano11 script
       shell: pwsh
       run: |
+        Write-Host "Starting nano11 build process..."
         Set-ExecutionPolicy Bypass -Scope Process -Force
-        $mount = Mount-DiskImage -ImagePath 'C:\actions\work\windows11.iso' -PassThru
-        Start-Sleep -Seconds 5
-        $driveLetter = ($mount | Get-Volume).DriveLetter + ":"
-        .\nano11\nano11builder.ps1 -SourceIsoDrive $driveLetter
+        
+        $isoPath = Join-Path $env:GITHUB_WORKSPACE "windows11.iso"
+        Write-Host "ISO Path: $isoPath"
+        
+        if (-not (Test-Path $isoPath)) {
+            Write-Error "ISO file not found at: $isoPath"
+            exit 1
+        }
+        
+        try {
+            Write-Host "Mounting ISO..."
+            $mount = Mount-DiskImage -ImagePath $isoPath -PassThru
+            Start-Sleep -Seconds 10
+            
+            $volume = $mount | Get-Volume
+            if (-not $volume) {
+                Write-Error "Failed to get volume from mounted ISO"
+                exit 1
+            }
+            
+            $driveLetter = $volume.DriveLetter + ":"
+            Write-Host "Mounted ISO to drive: $driveLetter"
+            
+            # Verify the drive has Windows installation files
+            $setupExe = Join-Path $driveLetter "setup.exe"
+            if (-not (Test-Path $setupExe)) {
+                Write-Error "setup.exe not found on mounted drive. Invalid Windows ISO."
+                exit 1
+            }
+            
+            # Change to nano11 directory and run the script
+            Set-Location ".\nano11"
+            Write-Host "Running nano11 builder script..."
+            
+            # Check if the script exists
+            if (-not (Test-Path ".\nano11builder.ps1")) {
+                Write-Error "nano11builder.ps1 not found in the repository"
+                Get-ChildItem -Name
+                exit 1
+            }
+            
+            # Run the nano11 builder
+            .\nano11builder.ps1 -SourceIsoDrive $driveLetter
+            
+        } catch {
+            Write-Error "Error during nano11 build: $_"
+            exit 1
+        } finally {
+            # Cleanup: Dismount the ISO
+            if ($mount) {
+                Write-Host "Dismounting ISO..."
+                Dismount-DiskImage -ImagePath $isoPath -ErrorAction SilentlyContinue
+            }
+        }
 
     - name: Find built ISO
       id: findiso
       shell: pwsh
       run: |
-        $iso = Get-ChildItem -Path .\nano11\*.iso | Select-Object -First 1
-        echo "ISO=$($iso.FullName)" >> $env:GITHUB_ENV
+        Write-Host "Searching for built nano11 ISO files..."
+        
+        # Search in common locations where nano11 might place the output
+        $searchPaths = @(
+            ".\nano11\*.iso",
+            ".\*.iso",
+            "$env:GITHUB_WORKSPACE\*.iso",
+            "$env:GITHUB_WORKSPACE\nano11\*.iso"
+        )
+        
+        $foundIso = $null
+        foreach ($searchPath in $searchPaths) {
+            Write-Host "Searching in: $searchPath"
+            $isos = Get-ChildItem -Path $searchPath -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne "windows11.iso" }
+            if ($isos) {
+                $foundIso = $isos | Select-Object -First 1
+                break
+            }
+        }
+        
+        if ($foundIso) {
+            Write-Host "Found ISO: $($foundIso.FullName)"
+            Write-Host "ISO Size: $($foundIso.Length / 1MB) MB"
+            echo "ISO_PATH=$($foundIso.FullName)" >> $env:GITHUB_ENV
+            echo "ISO_NAME=$($foundIso.Name)" >> $env:GITHUB_ENV
+        } else {
+            Write-Error "No nano11 ISO file found!"
+            Write-Host "Listing all files in workspace:"
+            Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -Name
+            exit 1
+        }
 
     - name: Upload built ISO
       uses: actions/upload-artifact@v4
       with:
         name: nano11-custom-iso
-        path: ${{ env.ISO }}
-        overwrite: true
+        path: ${{ env.ISO_PATH }}
+        if-no-files-found: error
+        retention-days: 30
